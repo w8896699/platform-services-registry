@@ -25,13 +25,13 @@ import { ProjectProfile } from '../db/model/profile';
 import { Quotas, QuotaSize } from '../db/model/quota';
 import { RequestEditType } from '../db/model/request';
 import { replaceForDescription } from '../libs/utils';
-import { NatsContext, NatsContextAction, NatsContextType, NatsMessage } from '../types';
+import { NatsContext, NatsContextAction, NatsMessage, NatsProjectNamespace, NatsTechnicalContact, NatsTechnicalContactRole } from '../types';
 import { MessageType, sendProvisioningMessage } from './messaging';
 import { getQuotaSize } from './profile';
 import shared from './shared';
 
 const dm = new DataManager(shared.pgPool);
-const { ProfileModel, ContactModel, QuotaModel, NamespaceModel } = dm;
+const { ProfileModel, ContactModel, QuotaModel, NamespaceModel, ClusterModel } = dm;
 
 export const fulfillNamespaceProvisioning = async (profileId: number) =>
   new Promise(async (resolve, reject) => {
@@ -41,7 +41,7 @@ export const fulfillNamespaceProvisioning = async (profileId: number) =>
 
       const subject: string = subjectPrefix.concat(profile.primaryClusterName);
       const context: NatsContext = await contextForProvisioning(profileId, false);
-
+      console.log(context)
       await sendNatsMessage(profileId, {
         natsSubject: subject,
         natsContext: context,
@@ -137,6 +137,20 @@ export const contextForEditing = async (profileId: number, isForSync: boolean, r
   }
 };
 
+// const appendQuotas = async (namespace, quota, quotas): Promise<NatsProjectNamespace> => {
+//   return {...namespace, ...quota, ...quotas}
+// }
+
+const updateContacts = async (contact): Promise<NatsTechnicalContact> => {
+  return {
+    user_id: contact.githubId,
+    provider: 'github', // TODO:(JL) Fix as part of #94.
+    email: contact.email,
+    rocketchat_username: null, // TODO:(SB) Update when rocketchat func is implemented
+    role: (contact.roleId === ROLE_IDS.TECHNICAL_CONTACT ? NatsTechnicalContactRole['Lead'] : NatsTechnicalContactRole['Owner'])
+  }
+}
+
 const buildContext = async (
   action: NatsContextAction, profile: ProjectProfile, contacts: Contact[], quotaSize: QuotaSize, quotas: Quotas
 ): Promise<NatsContext> => {
@@ -144,35 +158,32 @@ const buildContext = async (
     if (!profile.id) {
       throw new Error('Cant get profile id');
     }
-    const namespaces = await NamespaceModel.findForProfile(profile.id);
+    const namespacesDetails = await NamespaceModel.findNamespacesForProfile(profile.id);
+    
+    // @ts-ignore
+    const namespaces: NatsProjectNamespace[] = await namespacesDetails.map(n => {return {...n, ...quotaSize, ...quotas}})
+    // const namespaces: NatsProjectNamespace[] = await namespacesDetails.map(n => appendQuotas(n, quotaSize, quotas))
+    // namespaces = namespacesDetails.map(n => n.quota = quotaSize).map(n => n.quotas = quotas)
 
-    const tcContact = contacts.filter(c => c.roleId === ROLE_IDS.TECHNICAL_CONTACT).pop();
-    const poContact = contacts.filter(c => c.roleId === ROLE_IDS.PRODUCT_OWNER).pop();
+    const cluster = await ClusterModel.findByName(profile.primaryClusterName);
+    // @ts-ignore
+    const technicalContacts: NatsTechnicalContact[] = await contacts.map(contact => updateContacts(contact));
+    // const tcContact = contacts.filter(c => c.roleId === ROLE_IDS.TECHNICAL_CONTACT).pop();
+    // const poContact = contacts.filter(c => c.roleId === ROLE_IDS.PRODUCT_OWNER).pop();
 
-    if (!profile || !tcContact || !poContact || !quotaSize || !quotas || !namespaces) {
+    if (!profile || !quotaSize || !quotas || !namespaces || !cluster.id) {
       throw new Error('Missing arguments to build nats context');
     }
 
     return {
       action,
-      type: NatsContextType.Standard,
-      profileId: profile.id,
-      displayName: profile.name,
-      newDisplayName: 'NULL',
+      profile_id: profile.id,
+      cluster_id: cluster.id,
+      cluster_name: profile.primaryClusterName, // TODO:(sb) Update to allow GoldDR
+      display_name: profile.name,
       description: profile.description,
-      quota: quotaSize,
-      quotas,
       namespaces,
-      technicalContact: {
-        userId: tcContact.githubId,
-        provider: 'github', // TODO:(JL) Fix as part of #94.
-        email: tcContact.email,
-      },
-      productOwner: {
-        userId: poContact.githubId,
-        provider: 'github', // TODO:(JL) Fix as part of #94.
-        email: poContact.email,
-      },
+      technicalContacts,
     };
   } catch (err) {
     const message = `Unable to build context for profile ${profile.id}`;
