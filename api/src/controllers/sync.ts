@@ -64,7 +64,7 @@ export const getProvisionedProfileBotJson = async (
   { params }: { params: any }, res: Response
 ): Promise<void> => {
   const { profileId } = params;
-  const { ProfileModel } = dm;
+  const { ProfileModel, NamespaceModel } = dm;
 
   try {
     const profile = await ProfileModel.findById(Number(profileId));
@@ -79,7 +79,9 @@ export const getProvisionedProfileBotJson = async (
       throw new Error(errmsg);
     }
 
-    const context = await contextForProvisioning(profileId, true);
+    const clusters = await NamespaceModel.findClustersForProfile(profile.id);
+
+    const context = await contextForProvisioning(profileId, clusters[0], true);
 
     res.status(200).json(replaceForDescription(context));
   } catch (err) {
@@ -118,7 +120,7 @@ export const getProfileBotJsonUnderPending = async (
   { params }: { params: any }, res: Response
 ): Promise<void> => {
   const { profileId } = params;
-  const { RequestModel } = dm;
+  const { RequestModel, NamespaceModel } = dm;
 
   try {
     const profiles: ProjectProfile[] = await getProfilesUnderPendingEditOrCreate();
@@ -129,6 +131,9 @@ export const getProfileBotJsonUnderPending = async (
     }
 
     let context;
+
+    // TODO (SB): Make this actually dynamic rather than just taking the first cluster
+    const clusters = await NamespaceModel.findClustersForProfile(profileId);
 
     const requests = await RequestModel.findForProfile(profileId);
     // if the queried profile is under pending edit
@@ -142,11 +147,10 @@ export const getProfileBotJsonUnderPending = async (
         const errmsg = `Unable to get request edit Type`;
         throw new Error(errmsg);
       }
-
-      context = await contextForEditing(profileId, request.editType, request.editObject);
+      context = await contextForEditing(profileId, request.editType, request.editObject, clusters[0]);
     } else {
       // if the queried profile is under pending create
-      context = await contextForProvisioning(profileId, false);
+      context = await contextForProvisioning(profileId, clusters[0], false);
     }
 
     res.status(200).json(replaceForDescription(context));
